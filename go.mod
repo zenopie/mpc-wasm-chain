@@ -4,7 +4,7 @@ go 1.24.2
 
 require (
 	github.com/CosmWasm/wasmd v0.61.6
-	github.com/CosmWasm/wasmvm/v3 v3.0.2
+	github.com/CosmWasm/wasmvm/v3 v3.0.2 // indirect
 	github.com/cosmos/cosmos-proto v1.0.0-beta.5
 	github.com/cosmos/cosmos-sdk v0.53.4
 	github.com/cosmos/gogogateway v1.2.0 // indirect
@@ -32,7 +32,7 @@ require (
 	cosmossdk.io/api v0.9.2
 	cosmossdk.io/client/v2 v2.0.0-beta.3
 	cosmossdk.io/collections v1.3.1
-	cosmossdk.io/core v0.11.3
+	cosmossdk.io/core v1.0.0
 	cosmossdk.io/depinject v1.2.1
 	cosmossdk.io/errors v1.0.2
 	cosmossdk.io/log v1.6.1
@@ -51,6 +51,7 @@ require (
 	github.com/cosmos/ibc-go/v10 v10.4.0
 	github.com/rs/zerolog v1.34.0
 	github.com/spf13/viper v1.21.0
+	github.com/taurusgroup/frost-ed25519 v0.0.0-20210707140332-5abc84a4dba7
 	google.golang.org/genproto/googleapis/api v0.0.0-20250707201910-8d1bb00bc6a7
 )
 
@@ -94,7 +95,6 @@ require (
 	github.com/cockroachdb/pebble v1.1.5 // indirect
 	github.com/cockroachdb/redact v1.1.6 // indirect
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
-	github.com/coinbase/kryptology v1.8.0 // indirect
 	github.com/cometbft/cometbft-db v0.14.1 // indirect
 	github.com/cosmos/btcutil v1.0.5 // indirect
 	github.com/cosmos/go-bip39 v1.0.0 // indirect
@@ -202,7 +202,6 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.5.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
-	github.com/taurusgroup/frost-ed25519 v0.0.0-20210707140332-5abc84a4dba7 // indirect
 	github.com/tendermint/go-amino v0.16.0 // indirect
 	github.com/tidwall/btree v1.7.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
