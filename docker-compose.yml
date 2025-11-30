@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  validator0:
+    build: .
+    container_name: val0
+    command: start --home /root/.wasmd
+    volumes:
+      - ./.docker-testnet/node0:/root/.wasmd
+    ports:
+      - "26657:26657"
+      - "1317:1317"
+      - "9090:9090"
+    networks:
+      testnet:
+        ipv4_address: 172.20.0.10
+
+  validator1:
+    build: .
+    container_name: val1
+    command: start --home /root/.wasmd
+    volumes:
+      - ./.docker-testnet/node1:/root/.wasmd
+    ports:
+      - "26658:26657"
+      - "1318:1317"
+      - "9091:9090"
+    networks:
+      testnet:
+        ipv4_address: 172.20.0.11
+    depends_on:
+      - validator0
+
+networks:
+  testnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24

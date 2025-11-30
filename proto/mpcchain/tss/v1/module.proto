@@ -1,0 +1,11 @@
+syntax = "proto3";
+package mpcchain.tss.v1;
+
+import "gogoproto/gogo.proto";
+
+option go_package = "mpc-wasm-chain/x/tss/types";
+
+// Module is the config object of the TSS module
+message Module {
+  string authority = 1;
+}

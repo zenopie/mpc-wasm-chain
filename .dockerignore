@@ -1,0 +1,5 @@
+# Folders we don't want to copy to Docker daemon
+# Note: build/wasmd is needed for local dev Docker builds
+.testnets/
+.docker-testnet/
+.git/

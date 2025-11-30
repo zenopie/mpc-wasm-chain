@@ -1,0 +1,14 @@
+syntax = "proto3";
+package mpcchain.tss.v1;
+
+import "gogoproto/gogo.proto";
+import "mpcchain/tss/v1/types.proto";
+import "amino/amino.proto";
+
+option go_package = "mpc-wasm-chain/x/tss/types";
+
+// GenesisState defines the TSS module genesis state
+message GenesisState {
+  Params params = 1 [(gogoproto.nullable) = false, (amino.dont_omitempty) = true];
+  repeated KeySet key_sets = 2;
+}
