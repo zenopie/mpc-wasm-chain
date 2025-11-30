@@ -47,7 +47,11 @@
       "Bash(VAL2=wasm1guhfttg4eyqtcvmdk64cweuuzwp07lhqttv9pe)",
       "Bash(./wasmd genesis add-genesis-account:*)",
       "Bash(./wasmd genesis gentx:*)",
-      "Bash(./wasmd genesis collect-gentxs:*)"
+      "Bash(./wasmd genesis collect-gentxs:*)",
+      "Bash(git push:*)",
+      "Bash(git rm:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
