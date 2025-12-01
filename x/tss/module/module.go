@@ -143,9 +143,9 @@ func (am AppModule) ExportGenesis(ctx sdk.Context, _ codec.JSONCodec) json.RawMe
 func (AppModule) ConsensusVersion() uint64 { return 1 }
 
 // BeginBlock contains the logic that is automatically triggered at the beginning of each block.
-// Processes aggregated TSS data from vote extensions before normal transaction processing
+// Processes TSS data aggregated from vote extensions during proposal handling
 func (am AppModule) BeginBlock(ctx context.Context) error {
-	return am.keeper.ProcessTSSDataFromBlock(ctx)
+	return am.keeper.ProcessPendingTSSData(ctx)
 }
 
 // EndBlock contains the logic that is automatically triggered at the end of each block.

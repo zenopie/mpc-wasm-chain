@@ -2,14 +2,12 @@ package keeper
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
 // AggregatedTSSData contains all TSS data from vote extensions
-// This matches the structure in abci/proposals.go
 type AggregatedTSSData struct {
 	DKGRound1          map[string]map[string][]byte `json:"dkg_round1"`
 	DKGRound2          map[string]map[string][]byte `json:"dkg_round2"`
@@ -18,27 +16,27 @@ type AggregatedTSSData struct {
 }
 
 // In-memory storage for TSS data between ProcessProposal and BeginBlock
-// This is safe because ProcessProposal and BeginBlock run sequentially on the same node
+// Safe because ProcessProposal and BeginBlock run sequentially on the same node
 var (
 	pendingTSSData *AggregatedTSSData
 	tssDataMutex   sync.RWMutex
 )
 
-// StoreTSSDataForBlock stores aggregated TSS data to be processed in BeginBlock
-// Called by ProposalHandler during ProcessProposal
-func (k Keeper) StoreTSSDataForBlock(data *AggregatedTSSData) {
+// StorePendingTSSData stores aggregated TSS data for BeginBlock to process
+// Called by ProposalHandler during PrepareProposal/ProcessProposal
+func (k Keeper) StorePendingTSSData(data *AggregatedTSSData) {
 	tssDataMutex.Lock()
 	defer tssDataMutex.Unlock()
 	pendingTSSData = data
 }
 
-// ProcessTSSDataFromBlock retrieves and processes TSS data stored during ProcessProposal
+// ProcessPendingTSSData retrieves and processes TSS data stored during proposal handling
 // Called during BeginBlock
-func (k Keeper) ProcessTSSDataFromBlock(ctx context.Context) error {
+func (k Keeper) ProcessPendingTSSData(ctx context.Context) error {
 	tssDataMutex.Lock()
 	defer tssDataMutex.Unlock()
 
-	// No pending TSS data - this is normal for blocks without TSS activity
+	// No pending TSS data - normal for blocks without TSS activity
 	if pendingTSSData == nil {
 		return nil
 	}
@@ -50,22 +48,19 @@ func (k Keeper) ProcessTSSDataFromBlock(ctx context.Context) error {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	logger := sdkCtx.Logger().With("module", "tss", "phase", "begin_block")
 
-	logger.Info("Processing aggregated TSS data from vote extensions",
-		"height", sdkCtx.BlockHeight(),
-		"dkg_r1_sessions", len(data.DKGRound1),
-		"dkg_r2_sessions", len(data.DKGRound2),
-		"signing_commitments", len(data.SigningCommitments),
-		"signature_shares", len(data.SignatureShares))
+	// Track counts for logging
+	var dkgR1Count, dkgR2Count, sigCommitCount, sigShareCount int
 
 	// Process DKG Round 1 data
 	for sessionID, validators := range data.DKGRound1 {
 		for validatorAddr, commitment := range validators {
 			if err := k.ProcessDKGRound1(ctx, sessionID, validatorAddr, commitment); err != nil {
-				logger.Error("Failed to process DKG Round 1 data",
+				logger.Debug("Failed to process DKG Round 1",
 					"session", sessionID,
 					"validator", validatorAddr,
 					"error", err)
-				// Continue processing other data even if one fails
+			} else {
+				dkgR1Count++
 			}
 		}
 	}
@@ -74,10 +69,12 @@ func (k Keeper) ProcessTSSDataFromBlock(ctx context.Context) error {
 	for sessionID, validators := range data.DKGRound2 {
 		for validatorAddr, share := range validators {
 			if err := k.ProcessDKGRound2(ctx, sessionID, validatorAddr, share); err != nil {
-				logger.Error("Failed to process DKG Round 2 data",
+				logger.Debug("Failed to process DKG Round 2",
 					"session", sessionID,
 					"validator", validatorAddr,
 					"error", err)
+			} else {
+				dkgR2Count++
 			}
 		}
 	}
@@ -86,10 +83,12 @@ func (k Keeper) ProcessTSSDataFromBlock(ctx context.Context) error {
 	for requestID, validators := range data.SigningCommitments {
 		for validatorAddr, commitment := range validators {
 			if err := k.ProcessSigningCommitment(ctx, requestID, validatorAddr, commitment); err != nil {
-				logger.Error("Failed to process signing commitment",
+				logger.Debug("Failed to process signing commitment",
 					"request", requestID,
 					"validator", validatorAddr,
 					"error", err)
+			} else {
+				sigCommitCount++
 			}
 		}
 	}
@@ -98,25 +97,25 @@ func (k Keeper) ProcessTSSDataFromBlock(ctx context.Context) error {
 	for requestID, validators := range data.SignatureShares {
 		for validatorAddr, share := range validators {
 			if err := k.ProcessSignatureShare(ctx, requestID, validatorAddr, share); err != nil {
-				logger.Error("Failed to process signature share",
+				logger.Debug("Failed to process signature share",
 					"request", requestID,
 					"validator", validatorAddr,
 					"error", err)
+			} else {
+				sigShareCount++
 			}
 		}
 	}
 
-	logger.Info("Finished processing TSS data from vote extensions",
-		"height", sdkCtx.BlockHeight())
+	// Log summary if there was any TSS activity
+	if dkgR1Count > 0 || dkgR2Count > 0 || sigCommitCount > 0 || sigShareCount > 0 {
+		logger.Info("Processed TSS data from vote extensions",
+			"height", sdkCtx.BlockHeight(),
+			"dkg_r1", dkgR1Count,
+			"dkg_r2", dkgR2Count,
+			"signing_commitments", sigCommitCount,
+			"signature_shares", sigShareCount)
+	}
 
 	return nil
-}
-
-// ParseTSSDataFromBytes parses aggregated TSS data from JSON bytes
-func ParseTSSDataFromBytes(data []byte) (*AggregatedTSSData, error) {
-	var aggregated AggregatedTSSData
-	if err := json.Unmarshal(data, &aggregated); err != nil {
-		return nil, err
-	}
-	return &aggregated, nil
 }

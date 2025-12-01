@@ -1,12 +1,14 @@
 package keeper
 
 import (
+	"context"
 	"fmt"
 
 	"cosmossdk.io/collections"
 	"cosmossdk.io/core/address"
 	corestore "cosmossdk.io/core/store"
 	"github.com/cosmos/cosmos-sdk/codec"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	stakingkeeper "github.com/cosmos/cosmos-sdk/x/staking/keeper"
 
 	"mpc-wasm-chain/x/tss/types"
@@ -126,4 +128,44 @@ func (k *Keeper) SetValidatorConsensusAddress(addr string) {
 // This is called after wasm keeper initialization due to initialization order
 func (k *Keeper) SetWasmKeeper(wasmKeeper types.WasmKeeper) {
 	k.wasmKeeper = wasmKeeper
+}
+
+// GetActiveValidatorAddresses returns all active validator consensus addresses
+// Uses staking module to get validators
+func (k Keeper) GetActiveValidatorAddresses(ctx context.Context) ([]string, error) {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+
+	// Get all validators from staking module
+	validators, err := k.stakingKeeper.GetAllValidators(ctx)
+	if err != nil {
+		sdkCtx.Logger().Error("Failed to get all validators", "error", err)
+		return nil, fmt.Errorf("failed to get validators: %w", err)
+	}
+
+	addresses := make([]string, 0)
+	for _, val := range validators {
+		// Only include bonded, non-jailed validators
+		if !val.IsBonded() || val.IsJailed() {
+			continue
+		}
+
+		// Get consensus public key
+		consPubKey, err := val.ConsPubKey()
+		if err != nil {
+			continue
+		}
+
+		// Convert to consensus address (hex format)
+		consAddr := sdk.ConsAddress(consPubKey.Address())
+		hexAddr := fmt.Sprintf("%x", consAddr.Bytes())
+		addresses = append(addresses, hexAddr)
+	}
+
+	return addresses, nil
+}
+
+// GetValidatorAddress returns this validator's consensus address
+// Returns the address set at startup from priv_validator_key.json
+func (k Keeper) GetValidatorAddress(ctx context.Context) (string, error) {
+	return k.ValidatorConsensusAddress, nil
 }

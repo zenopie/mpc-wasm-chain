@@ -11,6 +11,10 @@ import (
 	"mpc-wasm-chain/x/tss/keeper"
 )
 
+// TSSDataPrefix identifies TSS aggregated data in proposals
+// Uses a unique prefix that won't collide with real transactions
+var TSSDataPrefix = []byte("__TSS_VOTE_EXT__")
+
 // ProposalHandler handles block proposals with TSS data
 type ProposalHandler struct {
 	keeper *keeper.Keeper
@@ -25,12 +29,71 @@ func NewProposalHandler(k *keeper.Keeper, logger log.Logger) *ProposalHandler {
 	}
 }
 
-// PrepareProposal aggregates TSS data from vote extensions into the block proposal
-// This is called by the block proposer
+// PrepareProposal aggregates TSS data from vote extensions and injects into proposal
+// Only the block proposer runs this - they have access to LocalLastCommit
 func (h *ProposalHandler) PrepareProposal(ctx sdk.Context, req *abci.RequestPrepareProposal) (*abci.ResponsePrepareProposal, error) {
-	fmt.Printf("TSS PrepareProposal: height=%d votes=%d\n", req.Height, len(req.LocalLastCommit.Votes))
+	// Aggregate TSS data from vote extensions
+	aggregated := h.aggregateVoteExtensions(req.LocalLastCommit.Votes)
 
-	// Aggregate TSS data from all vote extensions
+	// Check if there's any TSS data
+	hasTSSData := len(aggregated.DKGRound1) > 0 || len(aggregated.DKGRound2) > 0 ||
+		len(aggregated.SigningCommitments) > 0 || len(aggregated.SignatureShares) > 0
+
+	txs := req.Txs
+
+	if hasTSSData {
+		// Serialize aggregated data
+		dataBytes, err := json.Marshal(aggregated)
+		if err != nil {
+			h.logger.Error("Failed to marshal TSS data", "error", err)
+		} else {
+			// Inject as first "transaction" with prefix
+			tssData := append(TSSDataPrefix, dataBytes...)
+			txs = append([][]byte{tssData}, txs...)
+
+			h.logger.Debug("PrepareProposal: injected TSS data",
+				"height", req.Height,
+				"dkg_r1_sessions", len(aggregated.DKGRound1),
+				"dkg_r2_sessions", len(aggregated.DKGRound2),
+				"signing_commits", len(aggregated.SigningCommitments),
+				"sig_shares", len(aggregated.SignatureShares))
+		}
+	}
+
+	return &abci.ResponsePrepareProposal{Txs: txs}, nil
+}
+
+// ProcessProposal extracts TSS data from proposal and stores for BeginBlock
+// All validators run this - they extract what the proposer injected
+func (h *ProposalHandler) ProcessProposal(ctx sdk.Context, req *abci.RequestProcessProposal) (*abci.ResponseProcessProposal, error) {
+	// Check if first entry is TSS data (has our prefix)
+	if len(req.Txs) > 0 && len(req.Txs[0]) > len(TSSDataPrefix) {
+		prefix := req.Txs[0][:len(TSSDataPrefix)]
+		if string(prefix) == string(TSSDataPrefix) {
+			// Extract and parse TSS data
+			dataBytes := req.Txs[0][len(TSSDataPrefix):]
+
+			var aggregated keeper.AggregatedTSSData
+			if err := json.Unmarshal(dataBytes, &aggregated); err != nil {
+				h.logger.Error("Failed to unmarshal TSS data", "error", err)
+				// Don't reject block for TSS parsing errors
+			} else {
+				// Store for BeginBlock to process
+				h.keeper.StorePendingTSSData(&aggregated)
+
+				h.logger.Debug("ProcessProposal: stored TSS data",
+					"height", req.Height,
+					"dkg_r1_sessions", len(aggregated.DKGRound1),
+					"dkg_r2_sessions", len(aggregated.DKGRound2))
+			}
+		}
+	}
+
+	return &abci.ResponseProcessProposal{Status: abci.ResponseProcessProposal_ACCEPT}, nil
+}
+
+// aggregateVoteExtensions collects TSS data from all vote extensions
+func (h *ProposalHandler) aggregateVoteExtensions(votes []abci.ExtendedVoteInfo) *keeper.AggregatedTSSData {
 	aggregated := &keeper.AggregatedTSSData{
 		DKGRound1:          make(map[string]map[string][]byte),
 		DKGRound2:          make(map[string]map[string][]byte),
@@ -38,19 +101,18 @@ func (h *ProposalHandler) PrepareProposal(ctx sdk.Context, req *abci.RequestPrep
 		SignatureShares:    make(map[string]map[string][]byte),
 	}
 
-	// Process vote extensions from the last commit
-	for _, vote := range req.LocalLastCommit.Votes {
+	for _, vote := range votes {
 		if len(vote.VoteExtension) == 0 {
 			continue
 		}
 
-		// Get validator address from vote
+		// Get validator address from vote (hex format)
 		validatorAddr := fmt.Sprintf("%x", vote.Validator.Address)
 
 		// Decode vote extension
 		var ext TSSVoteExtension
 		if err := json.Unmarshal(vote.VoteExtension, &ext); err != nil {
-			h.logger.Error("Failed to unmarshal vote extension",
+			h.logger.Debug("Failed to unmarshal vote extension",
 				"validator", validatorAddr,
 				"error", err)
 			continue
@@ -89,61 +151,5 @@ func (h *ProposalHandler) PrepareProposal(ctx sdk.Context, req *abci.RequestPrep
 		}
 	}
 
-	// Encode aggregated data
-	aggregatedBytes, err := json.Marshal(aggregated)
-	if err != nil {
-		h.logger.Error("Failed to marshal aggregated TSS data", "error", err)
-		return &abci.ResponsePrepareProposal{Txs: req.Txs}, nil
-	}
-
-	h.logger.Info("Prepared proposal with aggregated TSS data",
-		"dkg_r1_sessions", len(aggregated.DKGRound1),
-		"dkg_r2_sessions", len(aggregated.DKGRound2),
-		"signing_requests", len(aggregated.SigningCommitments))
-
-	// Include aggregated data as the first "transaction"
-	// This is a special injection - not a real transaction
-	txs := [][]byte{aggregatedBytes}
-	txs = append(txs, req.Txs...)
-
-	return &abci.ResponsePrepareProposal{Txs: txs}, nil
+	return aggregated
 }
-
-// ProcessProposal verifies a block proposal containing TSS data
-// This is called by all validators when they receive a proposal
-func (h *ProposalHandler) ProcessProposal(ctx sdk.Context, req *abci.RequestProcessProposal) (*abci.ResponseProcessProposal, error) {
-	fmt.Printf("TSS ProcessProposal: height=%d txs=%d\n", req.Height, len(req.Txs))
-
-	// If no transactions, accept
-	if len(req.Txs) == 0 {
-		return &abci.ResponseProcessProposal{Status: abci.ResponseProcessProposal_ACCEPT}, nil
-	}
-
-	// First "transaction" should be the aggregated TSS data
-	var aggregated keeper.AggregatedTSSData
-	if err := json.Unmarshal(req.Txs[0], &aggregated); err != nil {
-		// Not TSS data or invalid format - this might be a regular transaction
-		// Accept the proposal (normal transactions are validated elsewhere)
-		return &abci.ResponseProcessProposal{Status: abci.ResponseProcessProposal_ACCEPT}, nil
-	}
-
-	// TODO: Add validation logic:
-	// 1. Verify aggregated data matches vote extensions from LastCommit
-	// 2. Verify no duplicate submissions per validator
-	// 3. Verify cryptographic validity
-	//
-	// For now, we accept all proposals to get the basic flow working
-
-	h.logger.Info("Verified proposal with TSS data",
-		"dkg_r1_sessions", len(aggregated.DKGRound1),
-		"dkg_r2_sessions", len(aggregated.DKGRound2))
-
-	// Store TSS data for processing in BeginBlock
-	// This avoids the TSS "transaction" being processed by normal tx handlers
-	h.keeper.StoreTSSDataForBlock(&aggregated)
-
-	return &abci.ResponseProcessProposal{Status: abci.ResponseProcessProposal_ACCEPT}, nil
-}
-
-// NOTE: FinalizeBlock is not needed - TSS data is processed in BeginBlock instead
-// The aggregated data is stored in memory during ProcessProposal and retrieved in BeginBlock

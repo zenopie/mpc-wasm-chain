@@ -1015,21 +1015,20 @@ func (app *WasmApp) setTSSHandlers() {
 	// Create vote extension handler for TSS (pass pointer to keeper)
 	voteExtHandler := tssabci.NewVoteExtensionHandler(&app.TssKeeper, app.Logger())
 
-	// Create proposal handler for TSS (pass pointer to keeper)
+	// Create proposal handler for TSS (aggregates vote extensions)
 	proposalHandler := tssabci.NewProposalHandler(&app.TssKeeper, app.Logger())
 
 	// Set vote extension handlers
 	app.SetExtendVoteHandler(voteExtHandler.ExtendVote)
 	app.SetVerifyVoteExtensionHandler(voteExtHandler.VerifyVoteExtension)
 
-	// Set proposal handlers
+	// Set proposal handlers (aggregate vote extensions for BeginBlock)
 	app.SetPrepareProposal(proposalHandler.PrepareProposal)
 	app.SetProcessProposal(proposalHandler.ProcessProposal)
 
 	app.Logger().Info("TSS ABCI handlers configured",
 		"vote_extensions", "enabled",
-		"prepare_proposal", "enabled",
-		"process_proposal", "enabled")
+		"proposal_handlers", "enabled")
 }
 
 func (app *WasmApp) setPinnedCodes(loadLatest bool) {
