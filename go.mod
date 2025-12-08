@@ -4,7 +4,7 @@ go 1.24.2
 
 require (
 	github.com/CosmWasm/wasmd v0.61.6
-	github.com/CosmWasm/wasmvm/v3 v3.0.2
+	github.com/CosmWasm/wasmvm/v3 v3.0.2 // indirect
 	github.com/cosmos/cosmos-proto v1.0.0-beta.5
 	github.com/cosmos/cosmos-sdk v0.53.4
 	github.com/cosmos/gogogateway v1.2.0 // indirect
@@ -43,7 +43,7 @@ require (
 	cosmossdk.io/x/evidence v0.2.0
 	cosmossdk.io/x/feegrant v0.2.0
 	cosmossdk.io/x/nft v0.2.0
-	cosmossdk.io/x/tx v0.14.0
+	cosmossdk.io/x/tx v1.1.0
 	cosmossdk.io/x/upgrade v0.2.0
 	filippo.io/edwards25519 v1.1.0
 	github.com/bnb-chain/tss-lib/v2 v2.0.2
