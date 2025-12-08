@@ -23,8 +23,9 @@ enum DKGState {
   DKG_STATE_UNSPECIFIED = 0;
   DKG_STATE_ROUND1 = 1;
   DKG_STATE_ROUND2 = 2;
-  DKG_STATE_COMPLETE = 3;
-  DKG_STATE_FAILED = 4;
+  DKG_STATE_KEY_SUBMISSION = 3;  // Validators submit encrypted key shares
+  DKG_STATE_COMPLETE = 4;
+  DKG_STATE_FAILED = 5;
 }
 
 // SigningState defines the state of a signing session
@@ -60,12 +61,19 @@ message KeySet {
 }
 
 // KeyShare represents a validator's share of a threshold key
+// The secret share is encrypted with the validator's public key (Ed25519→X25519)
 message KeyShare {
   string key_set_id = 1;
   string validator_address = 2;
-  bytes share_data = 3;
+  bytes share_data = 3;  // Metadata/reference (deprecated, kept for compatibility)
   bytes group_pubkey = 4;
   int64 created_height = 5;
+  // Encrypted FROST secret share (NaCl box sealed with validator's X25519 pubkey)
+  bytes encrypted_secret_share = 6;
+  // Encrypted FROST public shares (NaCl box sealed with validator's X25519 pubkey)
+  bytes encrypted_public_shares = 7;
+  // Ephemeral public key used for encryption (needed for decryption)
+  bytes ephemeral_pubkey = 8;
 }
 
 // DKG Session and Round data
@@ -90,6 +98,18 @@ message DKGRound2Data {
   string validator_address = 1;
   bytes share = 2;
   int64 submitted_height = 3;
+}
+
+// DKGKeySubmission contains a validator's encrypted secret share for on-chain storage
+message DKGKeySubmission {
+  string validator_address = 1;
+  // Encrypted FROST secret share (NaCl box sealed with validator's X25519 pubkey)
+  bytes encrypted_secret_share = 2;
+  // Encrypted FROST public shares (NaCl box sealed with validator's X25519 pubkey)
+  bytes encrypted_public_shares = 3;
+  // Ephemeral public key used for encryption (needed for decryption)
+  bytes ephemeral_pubkey = 4;
+  int64 submitted_height = 5;
 }
 
 // Signing Request and Session data

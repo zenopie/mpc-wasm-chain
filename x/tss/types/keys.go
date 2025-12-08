@@ -35,6 +35,9 @@ var DKGRound1DataPrefix = collections.NewPrefix("dkg_round1")
 // DKGRound2DataPrefix is the prefix for DKG Round 2 share data
 var DKGRound2DataPrefix = collections.NewPrefix("dkg_round2")
 
+// DKGKeySubmissionPrefix is the prefix for encrypted key share submissions
+var DKGKeySubmissionPrefix = collections.NewPrefix("dkg_key_submission")
+
 // Signing prefixes (from x/signing)
 // SigningRequestPrefix is the prefix for SigningRequest storage
 var SigningRequestPrefix = collections.NewPrefix("signing_request")

@@ -29,6 +29,11 @@ type Keeper struct {
 	// Set at startup from the priv_validator_key.json
 	ValidatorConsensusAddress string
 
+	// ValidatorPrivateKey is this node's validator Ed25519 private key (for decrypting key shares from chain)
+	// Set at startup from the priv_validator_key.json
+	// This is the raw 64-byte Ed25519 private key
+	ValidatorPrivateKey []byte
+
 	Schema collections.Schema
 	Params collections.Item[types.Params]
 
@@ -51,6 +56,10 @@ type Keeper struct {
 	// DKGRound2DataStore stores Round 2 shares
 	// Key: "session_id:validator_address"
 	DKGRound2DataStore collections.Map[string, types.DKGRound2Data]
+
+	// DKGKeySubmissionStore stores encrypted key share submissions
+	// Key: "session_id:validator_address"
+	DKGKeySubmissionStore collections.Map[string, types.DKGKeySubmission]
 
 	// Signing stores (from x/signing)
 	// SigningRequestStore stores signing requests by request_id
@@ -95,7 +104,8 @@ func NewKeeper(
 		KeyShareStore:      collections.NewMap(sb, types.KeySharePrefix, "keyshares", collections.PairKeyCodec(collections.StringKey, collections.StringKey), codec.CollValue[types.KeyShare](cdc)),
 		DKGSessionStore:    collections.NewMap(sb, types.DKGSessionPrefix, "dkg_sessions", collections.StringKey, codec.CollValue[types.DKGSession](cdc)),
 		DKGRound1DataStore: collections.NewMap(sb, types.DKGRound1DataPrefix, "dkg_round1_data", collections.StringKey, codec.CollValue[types.DKGRound1Data](cdc)),
-		DKGRound2DataStore: collections.NewMap(sb, types.DKGRound2DataPrefix, "dkg_round2_data", collections.StringKey, codec.CollValue[types.DKGRound2Data](cdc)),
+		DKGRound2DataStore:    collections.NewMap(sb, types.DKGRound2DataPrefix, "dkg_round2_data", collections.StringKey, codec.CollValue[types.DKGRound2Data](cdc)),
+		DKGKeySubmissionStore: collections.NewMap(sb, types.DKGKeySubmissionPrefix, "dkg_key_submissions", collections.StringKey, codec.CollValue[types.DKGKeySubmission](cdc)),
 
 		// Signing stores
 		SigningRequestStore:    collections.NewMap(sb, types.SigningRequestPrefix, "signing_requests", collections.StringKey, codec.CollValue[types.SigningRequest](cdc)),
@@ -122,6 +132,19 @@ func (k Keeper) GetAuthority() []byte {
 // Should be called at app startup with the address from priv_validator_key.json
 func (k *Keeper) SetValidatorConsensusAddress(addr string) {
 	k.ValidatorConsensusAddress = addr
+}
+
+// SetValidatorPrivateKey sets this node's validator Ed25519 private key
+// Should be called at app startup with the key from priv_validator_key.json
+// The key is used to decrypt key shares from on-chain storage
+func (k *Keeper) SetValidatorPrivateKey(privKey []byte) {
+	k.ValidatorPrivateKey = privKey
+}
+
+// GetValidatorPrivateKey returns this node's validator Ed25519 private key
+// Used for decrypting key shares from on-chain storage
+func (k Keeper) GetValidatorPrivateKey() []byte {
+	return k.ValidatorPrivateKey
 }
 
 // SetWasmKeeper sets the wasm keeper for contract callbacks
@@ -168,4 +191,34 @@ func (k Keeper) GetActiveValidatorAddresses(ctx context.Context) ([]string, erro
 // Returns the address set at startup from priv_validator_key.json
 func (k Keeper) GetValidatorAddress(ctx context.Context) (string, error) {
 	return k.ValidatorConsensusAddress, nil
+}
+
+// GetValidatorPubKeyByConsAddr returns the Ed25519 public key for a validator by consensus address (hex)
+func (k Keeper) GetValidatorPubKeyByConsAddr(ctx context.Context, consAddrHex string) ([]byte, error) {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+
+	// Get all validators and find the one matching the consensus address
+	validators, err := k.stakingKeeper.GetAllValidators(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get validators: %w", err)
+	}
+
+	for _, val := range validators {
+		consPubKey, err := val.ConsPubKey()
+		if err != nil {
+			continue
+		}
+
+		// Convert to consensus address (hex format)
+		consAddr := sdk.ConsAddress(consPubKey.Address())
+		hexAddr := fmt.Sprintf("%x", consAddr.Bytes())
+
+		if hexAddr == consAddrHex {
+			// Return the raw Ed25519 public key bytes
+			return consPubKey.Bytes(), nil
+		}
+	}
+
+	sdkCtx.Logger().Error("Validator not found for consensus address", "consAddrHex", consAddrHex)
+	return nil, fmt.Errorf("validator not found for consensus address: %s", consAddrHex)
 }

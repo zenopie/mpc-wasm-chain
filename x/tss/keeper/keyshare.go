@@ -6,17 +6,39 @@ import (
 	"fmt"
 
 	"cosmossdk.io/collections"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"mpc-wasm-chain/x/tss/types"
 )
 
-// SetKeyShare stores a validator's key share for a specific KeySet
-func (k Keeper) SetKeyShare(ctx context.Context, keySetID, validatorAddr string, encryptedShare, pubkey []byte) error {
+// SetKeyShare stores a validator's key share for a specific KeySet (legacy, metadata only)
+func (k Keeper) SetKeyShare(ctx context.Context, keySetID, validatorAddr string, shareData, pubkey []byte) error {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
 	keyShare := types.KeyShare{
-		KeySetId:        keySetID,
+		KeySetId:         keySetID,
 		ValidatorAddress: validatorAddr,
-		ShareData:  encryptedShare,
-		GroupPubkey:          pubkey,
-		CreatedHeight:   0, // TODO: Get from context
+		ShareData:        shareData,
+		GroupPubkey:      pubkey,
+		CreatedHeight:    sdkCtx.BlockHeight(),
+	}
+
+	key := collections.Join(keySetID, validatorAddr)
+	return k.KeyShareStore.Set(ctx, key, keyShare)
+}
+
+// SetEncryptedKeyShare stores a validator's encrypted key share on-chain
+// The secret share and public shares are encrypted with the validator's Ed25519 public key
+func (k Keeper) SetEncryptedKeyShare(ctx context.Context, keySetID, validatorAddr string, groupPubkey []byte,
+	encryptedSecretShare, encryptedPublicShares, ephemeralPubKey []byte) error {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+
+	keyShare := types.KeyShare{
+		KeySetId:              keySetID,
+		ValidatorAddress:      validatorAddr,
+		GroupPubkey:           groupPubkey,
+		CreatedHeight:         sdkCtx.BlockHeight(),
+		EncryptedSecretShare:  encryptedSecretShare,
+		EncryptedPublicShares: encryptedPublicShares,
+		EphemeralPubkey:       ephemeralPubKey,
 	}
 
 	key := collections.Join(keySetID, validatorAddr)

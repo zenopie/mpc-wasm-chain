@@ -212,18 +212,99 @@ func (k Keeper) GetDKGRound2Count(ctx context.Context, sessionID string) (int, e
 	return count, err
 }
 
-// CompleteDKG finalizes a DKG ceremony and activates the KeySet
-func (k Keeper) CompleteDKG(ctx context.Context, sessionID string) error {
+// ProcessDKGKeySubmission stores a validator's encrypted key share submission
+func (k Keeper) ProcessDKGKeySubmission(ctx context.Context, sessionID, validatorAddr string,
+	encryptedSecretShare, encryptedPublicShares, ephemeralPubKey []byte) error {
 	// Get the session
 	session, err := k.GetDKGSession(ctx, sessionID)
 	if err != nil {
 		return err
 	}
 
-	// Aggregate DKG data using FROST
-	groupPubkey, keyShares, err := k.CompleteDKGCeremony(ctx, session)
+	// Verify session is in KEY_SUBMISSION state
+	if session.State != types.DKGState_DKG_STATE_KEY_SUBMISSION {
+		return fmt.Errorf("DKG session is not in KEY_SUBMISSION state")
+	}
+
+	// Verify validator is a participant
+	if !contains(session.Participants, validatorAddr) {
+		return fmt.Errorf("validator %s is not a participant in this DKG session", validatorAddr)
+	}
+
+	// Check if validator already submitted
+	existingKey := fmt.Sprintf("%s:%s", sessionID, validatorAddr)
+	has, err := k.DKGKeySubmissionStore.Has(ctx, existingKey)
 	if err != nil {
-		return fmt.Errorf("failed to complete DKG ceremony: %w", err)
+		return err
+	}
+	if has {
+		return fmt.Errorf("validator %s already submitted encrypted key share", validatorAddr)
+	}
+
+	// Store key submission
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+	submission := types.DKGKeySubmission{
+		ValidatorAddress:      validatorAddr,
+		EncryptedSecretShare:  encryptedSecretShare,
+		EncryptedPublicShares: encryptedPublicShares,
+		EphemeralPubkey:       ephemeralPubKey,
+		SubmittedHeight:       sdkCtx.BlockHeight(),
+	}
+
+	return k.DKGKeySubmissionStore.Set(ctx, existingKey, submission)
+}
+
+// GetDKGKeySubmissionCount returns the number of encrypted key submissions for a session
+func (k Keeper) GetDKGKeySubmissionCount(ctx context.Context, sessionID string) (int, error) {
+	count := 0
+	prefix := sessionID + ":"
+
+	err := k.DKGKeySubmissionStore.Walk(ctx, nil, func(key string, value types.DKGKeySubmission) (bool, error) {
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			count++
+		}
+		return false, nil
+	})
+
+	return count, err
+}
+
+// GetDKGKeySubmissions returns all encrypted key submissions for a session
+func (k Keeper) GetDKGKeySubmissions(ctx context.Context, sessionID string) (map[string]types.DKGKeySubmission, error) {
+	submissions := make(map[string]types.DKGKeySubmission)
+	prefix := sessionID + ":"
+
+	err := k.DKGKeySubmissionStore.Walk(ctx, nil, func(key string, value types.DKGKeySubmission) (bool, error) {
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			submissions[value.ValidatorAddress] = value
+		}
+		return false, nil
+	})
+
+	return submissions, err
+}
+
+// CompleteDKG finalizes a DKG ceremony and activates the KeySet
+// This is called after KEY_SUBMISSION phase when all encrypted shares have been collected
+func (k Keeper) CompleteDKG(ctx context.Context, sessionID string) error {
+	sdkCtx := sdk.UnwrapSDKContext(ctx)
+
+	// Get the session
+	session, err := k.GetDKGSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+
+	// Get the group public key from local FROST state (computed during Round 2)
+	groupPubkey, err := k.GetDKGGroupPubKey(sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to get group public key: %w", err)
+	}
+
+	// Get all encrypted key submissions
+	submissions, err := k.GetDKGKeySubmissions(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("failed to get key submissions: %w", err)
 	}
 
 	// Update KeySet status to ACTIVE with the group public key and participants
@@ -231,14 +312,14 @@ func (k Keeper) CompleteDKG(ctx context.Context, sessionID string) error {
 		return err
 	}
 
-	// Store individual key shares for each validator
-	// Note: In production, validators should store actual key shares securely off-chain
-	// These are references/identifiers for the shares
-	sdkCtx := sdk.UnwrapSDKContext(ctx)
-	for validatorAddr, shareData := range keyShares {
-		if err := k.SetKeyShare(ctx, session.KeySetId, validatorAddr, shareData, groupPubkey); err != nil {
-			return fmt.Errorf("failed to store key share for %s: %w", validatorAddr, err)
+	// Store encrypted key shares for each validator who submitted
+	for validatorAddr, submission := range submissions {
+		if err := k.SetEncryptedKeyShare(ctx, session.KeySetId, validatorAddr, groupPubkey,
+			submission.EncryptedSecretShare, submission.EncryptedPublicShares, submission.EphemeralPubkey); err != nil {
+			return fmt.Errorf("failed to store encrypted key share for %s: %w", validatorAddr, err)
 		}
+		sdkCtx.Logger().Info("Stored encrypted key share on-chain",
+			"keyset_id", session.KeySetId, "validator", validatorAddr)
 	}
 
 	// Delete the completed DKG session - no longer needed
@@ -246,10 +327,14 @@ func (k Keeper) CompleteDKG(ctx context.Context, sessionID string) error {
 		return err
 	}
 
-	// Also clean up round data
+	// Clean up all round data including key submissions
 	k.cleanupDKGRoundData(ctx, sessionID)
+	k.cleanupDKGKeySubmissions(ctx, sessionID)
 
-	sdkCtx.Logger().Info("DKG completed and session cleaned up", "session_id", sessionID)
+	// Clean up local FROST state (we no longer keep keys in memory)
+	k.CleanupDKGState(sessionID)
+
+	sdkCtx.Logger().Info("DKG completed - encrypted key shares stored on-chain", "session_id", sessionID)
 
 	return nil
 }
@@ -307,6 +392,22 @@ func (k Keeper) cleanupDKGRoundData(ctx context.Context, sessionID string) {
 	}
 }
 
+// cleanupDKGKeySubmissions removes key submission data for a session
+func (k Keeper) cleanupDKGKeySubmissions(ctx context.Context, sessionID string) {
+	prefix := sessionID + ":"
+
+	var keys []string
+	k.DKGKeySubmissionStore.Walk(ctx, nil, func(key string, _ types.DKGKeySubmission) (bool, error) {
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			keys = append(keys, key)
+		}
+		return false, nil
+	})
+	for _, key := range keys {
+		k.DKGKeySubmissionStore.Remove(ctx, key)
+	}
+}
+
 // ProcessDKGEndBlock handles DKG state transitions at the end of each block
 func (k Keeper) ProcessDKGEndBlock(ctx context.Context) error {
 	sdkCtx := sdk.UnwrapSDKContext(ctx)
@@ -342,6 +443,7 @@ func (k Keeper) ProcessDKGEndBlock(ctx context.Context) error {
 				if err := k.SetDKGSession(ctx, session); err != nil {
 					return true, err
 				}
+				sdkCtx.Logger().Info("DKG transitioning to ROUND2", "session_id", sessionID)
 			}
 
 		case types.DKGState_DKG_STATE_ROUND2:
@@ -351,11 +453,29 @@ func (k Keeper) ProcessDKGEndBlock(ctx context.Context) error {
 				return true, err
 			}
 
-			// If threshold met, complete DKG
+			// If threshold met, advance to KEY_SUBMISSION state
+			// (validators need to submit their encrypted key shares)
+			if uint32(count) >= session.Threshold {
+				session.State = types.DKGState_DKG_STATE_KEY_SUBMISSION
+				if err := k.SetDKGSession(ctx, session); err != nil {
+					return true, err
+				}
+				sdkCtx.Logger().Info("DKG transitioning to KEY_SUBMISSION", "session_id", sessionID)
+			}
+
+		case types.DKGState_DKG_STATE_KEY_SUBMISSION:
+			// Check if enough encrypted key submissions
+			count, err := k.GetDKGKeySubmissionCount(ctx, sessionID)
+			if err != nil {
+				return true, err
+			}
+
+			// If threshold met, complete DKG and store encrypted shares on-chain
 			if uint32(count) >= session.Threshold {
 				if err := k.CompleteDKG(ctx, sessionID); err != nil {
 					return true, err
 				}
+				sdkCtx.Logger().Info("DKG completed with encrypted key shares stored on-chain", "session_id", sessionID)
 			}
 		}
 

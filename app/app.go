@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -614,18 +615,30 @@ func NewWasmApp(
 		app.StakingKeeper,
 	)
 
-	// Set validator consensus address from priv_validator_key.json for TSS vote extensions
+	// Set validator consensus address and private key from priv_validator_key.json for TSS
 	// This is the cryptographically authoritative source for "who am I" - derived from the validator's private key
+	// The private key is needed to decrypt key shares from on-chain storage
 	// Note: This silently skips if the key file doesn't exist (e.g., during CLI commands)
 	privValKeyPath := filepath.Join(homePath, "config", "priv_validator_key.json")
 	if privValKeyData, err := os.ReadFile(privValKeyPath); err == nil {
 		var privValKey struct {
 			Address string `json:"address"`
+			PrivKey struct {
+				Type  string `json:"type"`
+				Value string `json:"value"`
+			} `json:"priv_key"`
 		}
 		if err := json.Unmarshal(privValKeyData, &privValKey); err == nil && privValKey.Address != "" {
 			// Address in priv_validator_key.json is uppercase hex, convert to lowercase for consistency
 			addr := strings.ToLower(privValKey.Address)
 			app.TssKeeper.SetValidatorConsensusAddress(addr)
+
+			// Decode and store the private key for TSS key share decryption
+			if privValKey.PrivKey.Value != "" {
+				if privKeyBytes, err := base64.StdEncoding.DecodeString(privValKey.PrivKey.Value); err == nil {
+					app.TssKeeper.SetValidatorPrivateKey(privKeyBytes)
+				}
+			}
 		}
 	}
 

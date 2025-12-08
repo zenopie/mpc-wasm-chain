@@ -5,6 +5,7 @@
 ## Table of Contents
 
 - [mpcchain/tss/v1/types.proto](#mpcchain/tss/v1/types.proto)
+    - [DKGKeySubmission](#mpcchain.tss.v1.DKGKeySubmission)
     - [DKGRound1Data](#mpcchain.tss.v1.DKGRound1Data)
     - [DKGRound2Data](#mpcchain.tss.v1.DKGRound2Data)
     - [DKGSession](#mpcchain.tss.v1.DKGSession)
@@ -73,6 +74,25 @@
 <p align="right"><a href="#top">Top</a></p>
 
 ## mpcchain/tss/v1/types.proto
+
+
+
+<a name="mpcchain.tss.v1.DKGKeySubmission"></a>
+
+### DKGKeySubmission
+DKGKeySubmission contains a validator's encrypted secret share for on-chain storage
+
+
+| Field | Type | Label | Description |
+| ----- | ---- | ----- | ----------- |
+| `validator_address` | [string](#string) |  |  |
+| `encrypted_secret_share` | [bytes](#bytes) |  | Encrypted FROST secret share (NaCl box sealed with validator's X25519 pubkey) |
+| `encrypted_public_shares` | [bytes](#bytes) |  | Encrypted FROST public shares (NaCl box sealed with validator's X25519 pubkey) |
+| `ephemeral_pubkey` | [bytes](#bytes) |  | Ephemeral public key used for encryption (needed for decryption) |
+| `submitted_height` | [int64](#int64) |  |  |
+
+
+
 
 
 
@@ -159,15 +179,19 @@ KeySet represents a threshold signature key set
 
 ### KeyShare
 KeyShare represents a validator's share of a threshold key
+The secret share is encrypted with the validator's public key (Ed25519→X25519)
 
 
 | Field | Type | Label | Description |
 | ----- | ---- | ----- | ----------- |
 | `key_set_id` | [string](#string) |  |  |
 | `validator_address` | [string](#string) |  |  |
-| `share_data` | [bytes](#bytes) |  |  |
+| `share_data` | [bytes](#bytes) |  | Metadata/reference (deprecated, kept for compatibility) |
 | `group_pubkey` | [bytes](#bytes) |  |  |
 | `created_height` | [int64](#int64) |  |  |
+| `encrypted_secret_share` | [bytes](#bytes) |  | Encrypted FROST secret share (NaCl box sealed with validator's X25519 pubkey) |
+| `encrypted_public_shares` | [bytes](#bytes) |  | Encrypted FROST public shares (NaCl box sealed with validator's X25519 pubkey) |
+| `ephemeral_pubkey` | [bytes](#bytes) |  | Ephemeral public key used for encryption (needed for decryption) |
 
 
 
@@ -273,8 +297,9 @@ DKGState defines the state of a DKG session
 | DKG_STATE_UNSPECIFIED | 0 |  |
 | DKG_STATE_ROUND1 | 1 |  |
 | DKG_STATE_ROUND2 | 2 |  |
-| DKG_STATE_COMPLETE | 3 |  |
-| DKG_STATE_FAILED | 4 |  |
+| DKG_STATE_KEY_SUBMISSION | 3 | Validators submit encrypted key shares |
+| DKG_STATE_COMPLETE | 4 |  |
+| DKG_STATE_FAILED | 5 |  |
 
 
 

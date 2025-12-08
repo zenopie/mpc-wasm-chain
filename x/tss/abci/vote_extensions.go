@@ -35,6 +35,9 @@ type TSSVoteExtension struct {
 	// DKG Round 2 data for active sessions
 	DKGRound2 []DKGRound2Data `json:"dkg_round2,omitempty"`
 
+	// DKG Key Submissions - encrypted key shares for on-chain storage
+	DKGKeySubmissions []DKGKeySubmissionData `json:"dkg_key_submissions,omitempty"`
+
 	// Signing commitments for active signing requests
 	SigningCommitments []SigningCommitmentData `json:"signing_commitments,omitempty"`
 
@@ -52,6 +55,14 @@ type DKGRound1Data struct {
 type DKGRound2Data struct {
 	SessionID string `json:"session_id"`
 	Share     []byte `json:"share"`
+}
+
+// DKGKeySubmissionData represents a validator's encrypted key share submission
+type DKGKeySubmissionData struct {
+	SessionID             string `json:"session_id"`
+	EncryptedSecretShare  []byte `json:"encrypted_secret_share"`
+	EncryptedPublicShares []byte `json:"encrypted_public_shares"`
+	EphemeralPubKey       []byte `json:"ephemeral_pubkey"`
 }
 
 // SigningCommitmentData represents a validator's signing commitment
@@ -136,6 +147,34 @@ func (h *VoteExtensionHandler) ExtendVote(ctx sdk.Context, req *abci.RequestExte
 		h.logger.Error("Error collecting DKG Round 2 data", "error", err)
 	}
 
+	// Check for DKG Key Submission data (encrypted key shares for on-chain storage)
+	if err := h.keeper.DKGSessionStore.Walk(ctx, nil, func(sessionID string, session types.DKGSession) (bool, error) {
+		if session.State == types.DKGState_DKG_STATE_KEY_SUBMISSION && h.isParticipant(validatorAddr, session.Participants) {
+			key := fmt.Sprintf("%s:%s", sessionID, validatorAddr)
+			has, _ := h.keeper.DKGKeySubmissionStore.Has(ctx, key)
+			if !has {
+				// Generate encrypted key share submission
+				encSecretShare, encPublicShares, ephemeralPubKey, err := h.keeper.GenerateEncryptedKeySubmission(ctx, sessionID, validatorAddr)
+				if err != nil {
+					h.logger.Error("Failed to generate encrypted key submission",
+						"session_id", sessionID, "error", err)
+					return false, nil
+				}
+				ext.DKGKeySubmissions = append(ext.DKGKeySubmissions, DKGKeySubmissionData{
+					SessionID:             sessionID,
+					EncryptedSecretShare:  encSecretShare,
+					EncryptedPublicShares: encPublicShares,
+					EphemeralPubKey:       ephemeralPubKey,
+				})
+				h.logger.Info("Generated encrypted key submission for on-chain storage",
+					"session_id", sessionID)
+			}
+		}
+		return false, nil
+	}); err != nil {
+		h.logger.Error("Error collecting DKG key submissions", "error", err)
+	}
+
 	// Check for signing commitments to submit
 	if err := h.keeper.SigningRequestStore.Walk(ctx, nil, func(requestID string, request types.SigningRequest) (bool, error) {
 		if request.Status == types.SigningRequestStatus_SIGNING_REQUEST_STATUS_ROUND1 {
@@ -198,6 +237,7 @@ func (h *VoteExtensionHandler) ExtendVote(ctx sdk.Context, req *abci.RequestExte
 	h.logger.Info("Extended vote with TSS data",
 		"dkg_r1", len(ext.DKGRound1),
 		"dkg_r2", len(ext.DKGRound2),
+		"dkg_key_submissions", len(ext.DKGKeySubmissions),
 		"commitments", len(ext.SigningCommitments),
 		"shares", len(ext.SignatureShares))
 

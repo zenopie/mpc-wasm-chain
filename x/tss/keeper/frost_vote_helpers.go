@@ -102,7 +102,8 @@ func (k Keeper) GenerateSigningCommitmentReal(ctx context.Context, requestID, va
 	}
 
 	// Initialize FROST sign state if not already done
-	if err := k.InitSignState(requestID, request.KeySetId, participantIndex, signerIndices, request.MessageHash); err != nil {
+	// This will load and decrypt key shares from chain on-demand
+	if err := k.InitSignState(ctx, requestID, request.KeySetId, participantIndex, signerIndices, request.MessageHash); err != nil {
 		fmt.Printf("FROST Sign Round1: failed to init state: %v\n", err)
 		return nil
 	}

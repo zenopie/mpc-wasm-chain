@@ -185,21 +185,194 @@ func (k Keeper) ProcessDKGRound2Messages(sessionID string, round2Messages [][]by
 	return groupKey, secretShare, publicShares, nil
 }
 
-// StoreFROSTKeyShare stores the FROST key share for future signing
-// It saves to both memory and disk for persistence across restarts
-func (k Keeper) StoreFROSTKeyShare(keySetID string, secretShare *eddsa.SecretShare, publicShares *eddsa.Public) {
+// StoreFROSTKeyShareTemporary stores the FROST key share temporarily in memory
+// Used during KEY_SUBMISSION phase before encryption and on-chain storage
+// The key share will be cleared after encryption
+func (k Keeper) StoreFROSTKeyShareTemporary(keySetID string, secretShare *eddsa.SecretShare, publicShares *eddsa.Public) {
 	frostStateManager.mu.Lock()
 	defer frostStateManager.mu.Unlock()
 
 	frostStateManager.keyShares[keySetID] = secretShare
 	frostStateManager.publicShares[keySetID] = publicShares
+}
 
-	// Persist to disk for restart recovery
-	if err := saveFROSTKeyShareToDisk(keySetID, secretShare, publicShares); err != nil {
-		fmt.Printf("Warning: failed to persist FROST key share to disk: %v\n", err)
-	} else {
-		fmt.Printf("FROST key share saved to disk for keyset: %s\n", keySetID)
+// GetDKGGroupPubKey returns the group public key from the DKG output
+func (k Keeper) GetDKGGroupPubKey(sessionID string) ([]byte, error) {
+	frostStateManager.mu.RLock()
+	defer frostStateManager.mu.RUnlock()
+
+	output, exists := frostStateManager.dkgOutputs[sessionID]
+	if !exists {
+		return nil, fmt.Errorf("DKG output not found for session %s", sessionID)
 	}
+
+	if output.Public == nil || output.Public.GroupKey == nil {
+		return nil, fmt.Errorf("group key not available for session %s", sessionID)
+	}
+
+	return output.Public.GroupKey.ToEd25519(), nil
+}
+
+// GetFROSTKeyShareForEncryption returns the FROST key shares for encryption
+// Used during KEY_SUBMISSION phase
+func (k Keeper) GetFROSTKeyShareForEncryption(keySetID string) (*eddsa.SecretShare, *eddsa.Public, error) {
+	frostStateManager.mu.RLock()
+	defer frostStateManager.mu.RUnlock()
+
+	secretShare, exists := frostStateManager.keyShares[keySetID]
+	if !exists {
+		return nil, nil, fmt.Errorf("secret share not found for keyset %s", keySetID)
+	}
+
+	publicShares, exists := frostStateManager.publicShares[keySetID]
+	if !exists {
+		return nil, nil, fmt.Errorf("public shares not found for keyset %s", keySetID)
+	}
+
+	return secretShare, publicShares, nil
+}
+
+// ClearFROSTKeyShare removes the FROST key share from memory
+// Called after the key share has been encrypted and stored on-chain
+func (k Keeper) ClearFROSTKeyShare(keySetID string) {
+	frostStateManager.mu.Lock()
+	defer frostStateManager.mu.Unlock()
+
+	delete(frostStateManager.keyShares, keySetID)
+	delete(frostStateManager.publicShares, keySetID)
+}
+
+// GenerateEncryptedKeySubmission generates an encrypted key share submission for on-chain storage
+// Returns: encryptedSecretShare, encryptedPublicShares, ephemeralPubKey, error
+func (k Keeper) GenerateEncryptedKeySubmission(ctx context.Context, sessionID, validatorAddr string) ([]byte, []byte, []byte, error) {
+	// Get the DKG session to find the keyset ID
+	session, err := k.GetDKGSession(ctx, sessionID)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to get DKG session: %w", err)
+	}
+
+	keySetID := session.KeySetId
+
+	// Get the FROST key shares from memory (stored during Round 2 processing)
+	secretShare, publicShares, err := k.GetFROSTKeyShareForEncryption(keySetID)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to get FROST key shares: %w", err)
+	}
+
+	// Get the validator's Ed25519 public key
+	validatorPubKey, err := k.GetValidatorPubKeyByConsAddr(ctx, validatorAddr)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to get validator public key: %w", err)
+	}
+
+	// Serialize the secret share
+	secretShareBytes, err := json.Marshal(secretShare)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to serialize secret share: %w", err)
+	}
+
+	// Serialize the public shares
+	publicSharesBytes, err := json.Marshal(publicShares)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to serialize public shares: %w", err)
+	}
+
+	// Encrypt the secret share with the validator's public key
+	encSecretShare, ephemeralPubKey1, err := EncryptKeyShareForChain(secretShareBytes, validatorPubKey)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to encrypt secret share: %w", err)
+	}
+
+	// Encrypt the public shares with the same ephemeral key for consistency
+	// Note: We use a new ephemeral key for each piece for better security
+	encPublicShares, _, err := EncryptKeyShareForChain(publicSharesBytes, validatorPubKey)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to encrypt public shares: %w", err)
+	}
+
+	// Clear the key share from memory after encryption
+	// (it will be loaded from chain when needed for signing)
+	k.ClearFROSTKeyShare(keySetID)
+
+	return encSecretShare, encPublicShares, ephemeralPubKey1, nil
+}
+
+// LoadKeyShareFromChain loads and decrypts a key share from on-chain storage
+// This is called on-demand when signing is needed
+// The decrypted key is stored in memory temporarily and should be cleared after use
+func (k Keeper) LoadKeyShareFromChain(ctx context.Context, keySetID string) error {
+	// Get this validator's address
+	validatorAddr, err := k.GetValidatorAddress(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get validator address: %w", err)
+	}
+
+	// Get the encrypted key share from chain
+	keyShare, err := k.GetKeyShare(ctx, keySetID, validatorAddr)
+	if err != nil {
+		return fmt.Errorf("failed to get key share from chain: %w", err)
+	}
+
+	// Check if we have encrypted data
+	if len(keyShare.EncryptedSecretShare) == 0 {
+		return fmt.Errorf("no encrypted key share found on chain for keyset %s", keySetID)
+	}
+
+	// Get the validator's private key for decryption
+	validatorPrivKey := k.GetValidatorPrivateKey()
+	if len(validatorPrivKey) == 0 {
+		return fmt.Errorf("validator private key not available for decryption")
+	}
+
+	// Decrypt the secret share
+	secretShareBytes, err := DecryptKeyShareFromChain(
+		keyShare.EncryptedSecretShare,
+		keyShare.EphemeralPubkey,
+		validatorPrivKey,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt secret share: %w", err)
+	}
+
+	// Decrypt the public shares
+	publicSharesBytes, err := DecryptKeyShareFromChain(
+		keyShare.EncryptedPublicShares,
+		keyShare.EphemeralPubkey,
+		validatorPrivKey,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt public shares: %w", err)
+	}
+
+	// Deserialize the secret share
+	var secretShare eddsa.SecretShare
+	if err := json.Unmarshal(secretShareBytes, &secretShare); err != nil {
+		return fmt.Errorf("failed to deserialize secret share: %w", err)
+	}
+
+	// Deserialize the public shares
+	var publicShares eddsa.Public
+	if err := json.Unmarshal(publicSharesBytes, &publicShares); err != nil {
+		return fmt.Errorf("failed to deserialize public shares: %w", err)
+	}
+
+	// Store temporarily in memory for signing
+	frostStateManager.mu.Lock()
+	frostStateManager.keyShares[keySetID] = &secretShare
+	frostStateManager.publicShares[keySetID] = &publicShares
+	frostStateManager.mu.Unlock()
+
+	return nil
+}
+
+// ClearKeyShareAfterUse removes a key share from memory after signing is complete
+// This ensures keys are only in memory during the signing operation
+func (k Keeper) ClearKeyShareAfterUse(keySetID string) {
+	frostStateManager.mu.Lock()
+	defer frostStateManager.mu.Unlock()
+
+	delete(frostStateManager.keyShares, keySetID)
+	delete(frostStateManager.publicShares, keySetID)
 }
 
 // CleanupDKGState removes DKG state after completion
@@ -216,24 +389,46 @@ func (k Keeper) CleanupDKGState(sessionID string) {
 // ========================
 
 // InitSignState initializes FROST signing state for this validator
-func (k Keeper) InitSignState(requestID, keySetID string, selfIndex int, signerIndices []int, message []byte) error {
+// This function loads key shares from chain on-demand if not already in memory
+func (k Keeper) InitSignState(ctx context.Context, requestID, keySetID string, selfIndex int, signerIndices []int, message []byte) error {
+	// First check (without lock) if already initialized
+	frostStateManager.mu.RLock()
+	_, alreadyInit := frostStateManager.signStates[requestID]
+	frostStateManager.mu.RUnlock()
+	if alreadyInit {
+		return nil // Already initialized
+	}
+
+	// Check if key shares are in memory, if not load from chain
+	frostStateManager.mu.RLock()
+	_, hasKey := frostStateManager.keyShares[keySetID]
+	frostStateManager.mu.RUnlock()
+
+	if !hasKey {
+		// Load key share from chain on-demand (decrypts using validator private key)
+		if err := k.LoadKeyShareFromChain(ctx, keySetID); err != nil {
+			return fmt.Errorf("failed to load key share from chain: %w", err)
+		}
+		fmt.Printf("Loaded and decrypted key share from chain for keyset: %s\n", keySetID)
+	}
+
 	frostStateManager.mu.Lock()
 	defer frostStateManager.mu.Unlock()
 
-	// Check if already initialized
+	// Double-check after acquiring lock
 	if _, exists := frostStateManager.signStates[requestID]; exists {
 		return nil // Already initialized
 	}
 
-	// Get stored key shares
+	// Get stored key shares (now should be in memory)
 	secretShare, exists := frostStateManager.keyShares[keySetID]
 	if !exists {
-		return fmt.Errorf("no key share found for keyset %s", keySetID)
+		return fmt.Errorf("no key share found for keyset %s after loading", keySetID)
 	}
 
 	publicShares, exists := frostStateManager.publicShares[keySetID]
 	if !exists {
-		return fmt.Errorf("no public shares found for keyset %s", keySetID)
+		return fmt.Errorf("no public shares found for keyset %s after loading", keySetID)
 	}
 
 	// Create signer party IDs (1-indexed)
@@ -426,8 +621,9 @@ func (k Keeper) CompleteDKGCeremonyReal(ctx context.Context, session types.DKGSe
 		return nil, nil, fmt.Errorf("failed to complete DKG: %w", err)
 	}
 
-	// Store key shares for future signing
-	k.StoreFROSTKeyShare(session.KeySetId, secretShare, publicShares)
+	// Store key shares temporarily for KEY_SUBMISSION phase encryption
+	// These will be encrypted and stored on-chain, then cleared from memory
+	k.StoreFROSTKeyShareTemporary(session.KeySetId, secretShare, publicShares)
 
 	// Serialize group public key
 	groupPubkeyBytes := groupKey.ToEd25519()
@@ -454,6 +650,7 @@ func (k Keeper) CompleteDKGCeremonyReal(ctx context.Context, session types.DKGSe
 // AggregateSignatureReal performs signature aggregation using real FROST
 func (k Keeper) AggregateSignatureReal(ctx context.Context, request types.SigningRequest, round2Data map[string][]byte) ([]byte, error) {
 	requestID := request.Id
+	keySetID := request.KeySetId
 
 	// Collect round 2 messages
 	var round2Messages [][]byte
@@ -469,6 +666,11 @@ func (k Keeper) AggregateSignatureReal(ctx context.Context, request types.Signin
 
 	// Cleanup sign state
 	k.CleanupSignState(requestID)
+
+	// Clear the key share from memory after signing is complete
+	// Keys will be reloaded from chain on-demand for the next signing request
+	k.ClearKeyShareAfterUse(keySetID)
+	fmt.Printf("Cleared key share from memory after signing: %s\n", keySetID)
 
 	return signature, nil
 }

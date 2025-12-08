@@ -9,10 +9,18 @@ import (
 
 // AggregatedTSSData contains all TSS data from vote extensions
 type AggregatedTSSData struct {
-	DKGRound1          map[string]map[string][]byte `json:"dkg_round1"`
-	DKGRound2          map[string]map[string][]byte `json:"dkg_round2"`
-	SigningCommitments map[string]map[string][]byte `json:"signing_commitments"`
-	SignatureShares    map[string]map[string][]byte `json:"signature_shares"`
+	DKGRound1          map[string]map[string][]byte             `json:"dkg_round1"`
+	DKGRound2          map[string]map[string][]byte             `json:"dkg_round2"`
+	DKGKeySubmissions  map[string]map[string]*DKGKeySubmission  `json:"dkg_key_submissions"`
+	SigningCommitments map[string]map[string][]byte             `json:"signing_commitments"`
+	SignatureShares    map[string]map[string][]byte             `json:"signature_shares"`
+}
+
+// DKGKeySubmission contains encrypted key share data for aggregation
+type DKGKeySubmission struct {
+	EncryptedSecretShare  []byte `json:"encrypted_secret_share"`
+	EncryptedPublicShares []byte `json:"encrypted_public_shares"`
+	EphemeralPubKey       []byte `json:"ephemeral_pubkey"`
 }
 
 // In-memory storage for TSS data between ProcessProposal and BeginBlock
@@ -49,7 +57,7 @@ func (k Keeper) ProcessPendingTSSData(ctx context.Context) error {
 	logger := sdkCtx.Logger().With("module", "tss", "phase", "begin_block")
 
 	// Track counts for logging
-	var dkgR1Count, dkgR2Count, sigCommitCount, sigShareCount int
+	var dkgR1Count, dkgR2Count, dkgKeySubCount, sigCommitCount, sigShareCount int
 
 	// Process DKG Round 1 data
 	for sessionID, validators := range data.DKGRound1 {
@@ -75,6 +83,24 @@ func (k Keeper) ProcessPendingTSSData(ctx context.Context) error {
 					"error", err)
 			} else {
 				dkgR2Count++
+			}
+		}
+	}
+
+	// Process DKG Key Submissions (encrypted key shares for on-chain storage)
+	for sessionID, validators := range data.DKGKeySubmissions {
+		for validatorAddr, submission := range validators {
+			if err := k.ProcessDKGKeySubmission(ctx, sessionID, validatorAddr,
+				submission.EncryptedSecretShare, submission.EncryptedPublicShares, submission.EphemeralPubKey); err != nil {
+				logger.Debug("Failed to process DKG key submission",
+					"session", sessionID,
+					"validator", validatorAddr,
+					"error", err)
+			} else {
+				dkgKeySubCount++
+				logger.Info("Stored encrypted key submission on-chain",
+					"session", sessionID,
+					"validator", validatorAddr)
 			}
 		}
 	}
@@ -108,11 +134,12 @@ func (k Keeper) ProcessPendingTSSData(ctx context.Context) error {
 	}
 
 	// Log summary if there was any TSS activity
-	if dkgR1Count > 0 || dkgR2Count > 0 || sigCommitCount > 0 || sigShareCount > 0 {
+	if dkgR1Count > 0 || dkgR2Count > 0 || dkgKeySubCount > 0 || sigCommitCount > 0 || sigShareCount > 0 {
 		logger.Info("Processed TSS data from vote extensions",
 			"height", sdkCtx.BlockHeight(),
 			"dkg_r1", dkgR1Count,
 			"dkg_r2", dkgR2Count,
+			"dkg_key_submissions", dkgKeySubCount,
 			"signing_commitments", sigCommitCount,
 			"signature_shares", sigShareCount)
 	}

@@ -37,6 +37,7 @@ func (h *ProposalHandler) PrepareProposal(ctx sdk.Context, req *abci.RequestPrep
 
 	// Check if there's any TSS data
 	hasTSSData := len(aggregated.DKGRound1) > 0 || len(aggregated.DKGRound2) > 0 ||
+		len(aggregated.DKGKeySubmissions) > 0 ||
 		len(aggregated.SigningCommitments) > 0 || len(aggregated.SignatureShares) > 0
 
 	txs := req.Txs
@@ -97,6 +98,7 @@ func (h *ProposalHandler) aggregateVoteExtensions(votes []abci.ExtendedVoteInfo)
 	aggregated := &keeper.AggregatedTSSData{
 		DKGRound1:          make(map[string]map[string][]byte),
 		DKGRound2:          make(map[string]map[string][]byte),
+		DKGKeySubmissions:  make(map[string]map[string]*keeper.DKGKeySubmission),
 		SigningCommitments: make(map[string]map[string][]byte),
 		SignatureShares:    make(map[string]map[string][]byte),
 	}
@@ -132,6 +134,18 @@ func (h *ProposalHandler) aggregateVoteExtensions(votes []abci.ExtendedVoteInfo)
 				aggregated.DKGRound2[data.SessionID] = make(map[string][]byte)
 			}
 			aggregated.DKGRound2[data.SessionID][validatorAddr] = data.Share
+		}
+
+		// Aggregate DKG Key Submissions (encrypted key shares for on-chain storage)
+		for _, data := range ext.DKGKeySubmissions {
+			if aggregated.DKGKeySubmissions[data.SessionID] == nil {
+				aggregated.DKGKeySubmissions[data.SessionID] = make(map[string]*keeper.DKGKeySubmission)
+			}
+			aggregated.DKGKeySubmissions[data.SessionID][validatorAddr] = &keeper.DKGKeySubmission{
+				EncryptedSecretShare:  data.EncryptedSecretShare,
+				EncryptedPublicShares: data.EncryptedPublicShares,
+				EphemeralPubKey:       data.EphemeralPubKey,
+			}
 		}
 
 		// Aggregate signing commitments
